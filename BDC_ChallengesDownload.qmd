@@ -1,0 +1,160 @@
+---
+title: "FCC-BDC Challenges Download"
+author: "Christine Parker"
+format: html
+editor: visual
+last updated: 21 Nov 2024
+---
+
+# Set up environment
+
+A [good reference](https://cran.r-project.org/web/packages/httr/vignettes/secrets.html) for different ways to keep things like usernames, passwords, and API tokens secure in your scripts.
+
+```{r Load required libraries and settings}
+library(httr)
+library(jsonlite)
+library(tidyverse)
+
+# API base URL
+base_url <- "https://broadbandmap.fcc.gov/api/public/map/downloads"
+
+# User credentials (replace with your username and token)
+token <- Sys.getenv("FCC_API_TOKEN")
+username <- Sys.getenv("FCC_USERNAME")
+challenge_download_path <- paste0(Sys.getenv("challenge_download_path"), "/Downloaded_21Nov24/")
+
+print(token)      # Should display your API token
+print(username)   # Should display your username
+```
+
+# Function to get "as of" dates for availability data
+
+This will create a function that after running will provide you with a list of the available data sets and their corresponding publication dates. Currently, there are "availability" and "challenge" data for download.
+
+```{r create function to get as of dates}
+get_as_of_dates <- function(username, token) {
+  #create the url where you'll send your request
+  url <- paste0("https://broadbandmap.fcc.gov", "/api/public/map/listAsOfDates")
+  
+# Make the GET request, where your username and token are included in the header info to give you access
+  res <- GET(
+    url,
+    add_headers(
+      username = username,
+      hash_value = token
+    )
+  )
+  
+##Could comment-out the section below if you don't want to have the debugging steps run   
+# Check for successful response
+  if (status_code(res) == 200) {
+# Print the content of the response for debugging
+    content_res <- content(res, "parsed")
+    print(content_res)
+    return(content_res)  # Return the parsed content
+  } else {
+# If not successful, print the error status code and message
+    print(paste("Error:", status_code(res)))
+    print(content(res, "text"))
+    return(NULL)
+  }
+}
+
+```
+
+# Function to list challenge data files for a specific date
+
+This creates a function to download a list of all the challenge files that are available for public download.
+
+```{r function to list data files}
+list_challenge_files <- function(as_of_date) {
+  url <- paste0(base_url, "/listChallengeData/", as_of_date)
+  res <- GET(url, add_headers(username = username, hash_value = token))
+  stop_for_status(res)
+  content(res, as = "parsed", type = "application/json")
+
+
+}
+```
+
+# Function to download a specific file
+
+This function does the heavy lifting.
+
+```{r debug version download}
+
+download_challenge_file <- function(file_id, download_path = challenge_download_path) {
+  # Ensure the download path exists
+  if (!dir.exists(download_path)) {
+    dir.create(download_path, recursive = TRUE)
+  }
+
+  # Sanitize the file name to ensure it's valid
+ # sanitized_file_name <- gsub("[^A-Za-z0-9._-]", "_", file_name)  # Replace invalid characters
+  full_file_name <- paste0(download_path, file_id, ".zip")
+
+  # Construct the URL
+  url <- paste0("https://broadbandmap.fcc.gov/nbm/map/api/getChallengeDownloadFile/", file_id)
+
+  # Debug: Print file name and URL
+  print(paste("File path:", full_file_name))
+  print(paste("URL:", url))
+
+  # Perform the GET request
+  res <- GET(
+    url,
+    add_headers(
+      `accept` = "application/json, text/plain, */*",
+      `referer` = "https://broadbandmap.fcc.gov/data-download/challenge-data",
+      `user-agent` = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    write_disk(full_file_name, overwrite = TRUE)  # Save the file
+  )
+
+  # Check response status
+  if (http_status(res)$category != "Success") {
+    print(content(res, "text"))  # Print server response for debugging
+    stop(paste("Error:", http_status(res)$message))
+  }
+
+  message(paste("Downloaded:", full_file_name))
+}
+
+```
+
+# Download Steps
+
+This is the part of the script where you'll put all those functions to use! If you need to make edits to the categories of data you want to download, refer to the [API guide](https://us-fcc.app.box.com/v/bdc-public-data-api-spec) for more detail
+
+```{r Download the data, include=FALSE, echo=FALSE}
+# Step 1: Get "as of" dates
+dates <- get_as_of_dates(username, token)
+
+# Step 2: Select the latest date (or prompt user) - may need to edit number as the FCC is sequentially ordering the releases as of Nov 2024
+latest_date <- dates$data[[28]]$as_of_date
+
+# Step 3: List files for the selected date
+challenge_files <- list_challenge_files(latest_date)
+chall_data_list <- challenge_files[["data"]] %>% map_dfr(~ .x) %>%
+  #here I'm specifically interested in downloading the location-level data by state for only fixed broadband - you can choose other options - reference the API guide
+  subset(category == "Fixed Challenge - Resolved")
+
+
+# Step 4: Download all files
+# Iterate over all file_id values in avail_data_list
+for (i in 1:nrow(chall_data_list)) {
+  tryCatch({
+    # Extract file_id and file_name for the current row
+    file_id <- chall_data_list$file_id[i]
+   
+
+    # Call the download_file function
+    download_challenge_file(file_id)
+  }, error = function(e) {
+    # Handle errors gracefully and log them
+    message(paste("Error downloading file_id:", file_id, "-", e$message))
+  })
+}
+
+message("All downloads attempted.")
+```
