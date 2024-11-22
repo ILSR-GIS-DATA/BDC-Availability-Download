@@ -31,35 +31,38 @@ print(username)   # Should display your username
 
 This will create a function that after running will provide you with a list of the available data sets and their corresponding publication dates. Currently, there are "availability" and "challenge" data for download.
 
-```{r create function to get as of dates}
-get_as_of_dates <- function(username, token) {
-  #create the url where you'll send your request
-  url <- paste0("https://broadbandmap.fcc.gov", "/api/public/map/listAsOfDates")
+```{r function to get challenge dates}
+get_challenge_dates <- function(username, token) {
+  # Construct the URL for the as-of-dates endpoint
+  url <- "https://broadbandmap.fcc.gov/api/public/map/listAsOfDates"
   
-# Make the GET request, where your username and token are included in the header info to give you access
+  # Perform the GET request
   res <- GET(
     url,
     add_headers(
       username = username,
-      hash_value = token
+      hash_value = token,
+      `accept` = "application/json",
+      `user-agent` = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
   )
   
-##Could comment-out the section below if you don't want to have the debugging steps run   
-# Check for successful response
-  if (status_code(res) == 200) {
-# Print the content of the response for debugging
-    content_res <- content(res, "parsed")
-    print(content_res)
-    return(content_res)  # Return the parsed content
-  } else {
-# If not successful, print the error status code and message
-    print(paste("Error:", status_code(res)))
-    print(content(res, "text"))
-    return(NULL)
+  # Check the response status
+  if (http_status(res)$category != "Success") {
+    stop(paste("Error:", http_status(res)$message))
   }
+  
+  # Parse the JSON response
+  dates <- content(res, as = "parsed", type = "application/json")
+  
+  # Filter for data_type = "challenge"
+  challenge_dates <- Filter(function(d) d$data_type == "challenge", dates$data)
+  
+  # Extract as_of_date values
+  as_of_dates <- sapply(challenge_dates, function(d) d$as_of_date)
+  
+  return(as_of_dates)
 }
-
 ```
 
 # Function to list challenge data files for a specific date
@@ -75,6 +78,55 @@ list_challenge_files <- function(as_of_date) {
 
 
 }
+```
+
+```{r get list of challenge data files}
+
+
+list_challenge_files <- function(dates) {
+  all_files <- list()  # Initialize an empty list to store files
+  
+  
+  # Iterate over each date in the tibble
+  for (date in dates$date) {
+    message(paste("Fetching files for date:", date))
+    
+    # Construct the URL for the current date
+    url <- paste0(base_url, "/listChallengeData/", date)
+    
+    # Perform the GET request
+    res <- GET(
+      url,
+      add_headers(
+        username = username, 
+        hash_value = token,
+        `accept` = "application/json",
+        `user-agent` = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+      )
+    )
+    
+    # Check the response status
+    if (http_status(res)$category != "Success") {
+      warning(paste("Error fetching files for date:", date, "-", http_status(res)$message))
+      next  # Skip to the next date if there's an error
+    }
+    
+    # Parse the JSON response
+    files <- content(res, as = "parsed", type = "application/json")
+    
+    # Check if the data field is present and not empty
+    if (!is.null(files$data) && length(files$data) > 0) {
+      # Append the files to the master list
+      all_files <- append(all_files, files$data)
+    } else {
+      message(paste("No files found for date:", date))
+    }
+  }
+  
+  # Return the consolidated list of all files
+  return(all_files)
+}
+
 ```
 
 # Function to download a specific file
@@ -127,15 +179,16 @@ download_challenge_file <- function(file_id, download_path = challenge_download_
 This is the part of the script where you'll put all those functions to use! If you need to make edits to the categories of data you want to download, refer to the [API guide](https://us-fcc.app.box.com/v/bdc-public-data-api-spec) for more detail
 
 ```{r Download the data, include=FALSE, echo=FALSE}
-# Step 1: Get "as of" dates
-dates <- get_as_of_dates(username, token)
+# Step 1: Get "as of" dates for only challenge data
+dates <- get_challenge_dates(username, token) %>% as_tibble() %>% rename("date" = "value")
 
-# Step 2: Select the latest date (or prompt user) - may need to edit number as the FCC is sequentially ordering the releases as of Nov 2024
-latest_date <- dates$data[[28]]$as_of_date
 
-# Step 3: List files for the selected date
-challenge_files <- list_challenge_files(latest_date)
-chall_data_list <- challenge_files[["data"]] %>% map_dfr(~ .x) %>%
+# Step 3: List files for the dates
+challenge_files <- list_challenge_files(dates)
+
+
+# Step 4: Filter to get only the files you want - refer to API doc for specifics
+chall_data_list <- challenge_files %>% map_dfr(~ .x) %>%
   #here I'm specifically interested in downloading the location-level data by state for only fixed broadband - you can choose other options - reference the API guide
   subset(category == "Fixed Challenge - Resolved")
 
